@@ -1,0 +1,12 @@
+# SIH26101: Stage 1 & Stage 2 Dependencies
+# Minimum supported Python: >=3.10
+
+# PDF text and metadata extraction
+pymupdf>=1.24.0,<2.0.0
+
+# OCR and Computer Vision (Stage 2B)
+easyocr>=1.7.0
+opencv-python>=4.10.0
+
+# Testing framework
+pytest>=8.0.0
