@@ -31,6 +31,10 @@ MANIFEST_JSON_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_mani
 MANIFEST_CSV_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_manifest.csv"
 TEMPLATE_JSON_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_template.json"
 TEMPLATE_CSV_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_template.csv"
+READINESS_JSON_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_evidence_readiness.json"
+READINESS_CSV_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_evidence_readiness.csv"
+PACK_JSON_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_evidence_pack.json"
+PACK_CSV_PATH = PROJECT_ROOT / "data" / "interim" / "mapping_benchmark_evidence_pack.csv"
 
 # Immutable baselines
 EXPECTED_COURSE_HASH = "ec6ec89a68cb0bc3aecb777f00a156cda1898d2392b5fd2a7a09cc1e8fe159e7"
@@ -188,3 +192,74 @@ def test_json_and_csv_parity_template(template_data):
             # Ensure label column is empty in CSV as well
             if k == "assigned_benchmark_label":
                 assert c_rec[k] == "", f"Fabricated label in CSV for {j_rec['benchmark_case_id']}"
+
+
+@pytest.fixture(scope="module")
+def readiness_data():
+    with open(READINESS_JSON_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def pack_data():
+    with open(PACK_JSON_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_evidence_readiness_report_integrity(readiness_data, courses_data):
+    """Verify evidence readiness audit correctly documents missing syllabi across all 26 cases."""
+    assert readiness_data["report_id"] == "AUDIT-BM-PILOT-MOSPI-2026-V1"
+    assert readiness_data["total_cases_audited"] == 26
+    assert readiness_data["readiness_verdict"] == "READY FOR PARTIAL HUMAN REVIEW"
+
+    summary = readiness_data["evidence_tier_summary"]
+    assert summary["substantive_course_evidence_count"] == 0
+    assert summary["catalogue_metadata_only_count"] == 26
+    assert summary["external_syllabus_required_count"] == 26
+
+    courses_by_id = {c["record_id"]: c for c in courses_data}
+    cases = readiness_data["cases"]
+    assert len(cases) == 26
+
+    for c in cases:
+        cid = c["course_record_id"]
+        assert cid in courses_by_id
+        assert c["course_evidence_tier"] == "catalogue_metadata_only"
+        assert c["has_substantive_syllabus"] is False
+        assert c["evidence_sufficient_for_supported_mapping"] is False
+        assert c["evidence_sufficient_for_triage_or_gap_flag"] is True
+        assert len(c["missing_evidence"]) > 0
+        assert len(c["next_action_required"]) > 0
+
+    # CSV Parity check
+    with open(READINESS_CSV_PATH, "r", encoding="utf-8") as f:
+        csv_rows = list(csv.DictReader(f))
+    assert len(cases) == len(csv_rows)
+    for j_rec, c_rec in zip(cases, csv_rows):
+        for k, v in j_rec.items():
+            expected = "" if v is None else str(v)
+            assert c_rec[k] == expected
+
+
+def test_evidence_pack_safeguards_and_parity(pack_data):
+    """Verify evidence pack explicitly keeps syllabi missing and matches CSV parity."""
+    assert pack_data["pack_id"] == "PACK-BM-PILOT-MOSPI-2026-V1"
+    assert pack_data["total_cases"] == 26
+
+    evidence_pack = pack_data["evidence_pack"]
+    assert len(evidence_pack) == 26
+
+    for item in evidence_pack:
+        assert item["course_syllabus_excerpt"] == "[OFFICIAL SYLLABUS NOT PRESENT IN SOURCE DOCUMENT]"
+        assert item["acbp_source_citation"].startswith("SRC-MOSPI-ACBP-2026-27")
+        assert len(item["course_verbatim_metadata"]) > 0
+        assert item["recommended_triage_label"] in ("plausible_insufficient_evidence", "unresolved_insufficient_source")
+
+    # CSV Parity check
+    with open(PACK_CSV_PATH, "r", encoding="utf-8") as f:
+        csv_rows = list(csv.DictReader(f))
+    assert len(evidence_pack) == len(csv_rows)
+    for j_rec, c_rec in zip(evidence_pack, csv_rows):
+        for k, v in j_rec.items():
+            expected = "" if v is None else str(v)
+            assert c_rec[k] == expected
