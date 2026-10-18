@@ -200,13 +200,13 @@ MoSPI SIH26101: Competency Mapping Registry Validation (Stage 3.2)
 
 ---
 
-## 8. Defects, Limitations, & Recommended Fixes
+## 8. Defects, Limitations, & Hardening Resolution Ledger
 
-| Item ID | Finding / Limitation | Severity | Operational Impact | Recommended Resolution |
-| :---: | :--- | :---: | :--- | :--- |
-| **LIM-01** | **Target Identifier Ambiguity:** In `review_mapping.py`, passing `--id` checks both `mapping_id` and `course_record_id`. Currently 1:1, but if a course receives multiple mappings in future stages, passing a course ID will match only the first record. | **Low** | Non-breaking today; potential race condition in multi-candidate stages. | Enforce that CLI review operations require primary key `mapping_id` (`MAP-ACBP-KCM-XXX`). |
-| **LIM-02** | **Cold-Initialization Builder Overwrite:** Re-executing `build_mapping_registry.py` reconstructs the registry from baseline inputs, overwriting any human validation/rejection states made via `review_mapping.py`. | **Medium** | Risk of accidental human curation data loss if re-run indiscriminately. | Add a guard to `build_mapping_registry.py` that refuses to overwrite existing registry files unless an explicit `--force-reinit` flag is passed. |
-| **LIM-03** | **Unauthenticated Prototype CLI:** Reviewer identity (`--reviewer-id`) and role (`--reviewer-role`) are self-asserted strings without cryptographic proof or OAuth token validation. | **Low** (Design Constraint) | Acceptable in Stage 3.2 prototype; unsuitable for production civil service accreditation. | Integrate institutional SSO (Parichay / iGOT OAuth) before deploying to live ministry reviewers. |
+| Item ID | Finding / Limitation | Severity | Resolution Status (Stage 3.2.2) | Operational Impact & Mitigation |
+| :---: | :--- | :---: | :---: | :--- |
+| **LIM-01** | **Target Identifier Ambiguity:** In `review_mapping.py`, passing `--id` accepted both `mapping_id` and `course_record_id`. If a course has multiple candidates, passing course ID causes non-deterministic targeting. | **Low** | **RESOLVED IN STAGE 3.2.2** | Hardened `review_mapping.py` to strictly require `--mapping-id` matching `^MAP-ACBP-KCM-[0-9]{3,}$`. Passing course IDs (e.g. `ACBP-CRS-017`) is explicitly rejected with a helpful error. |
+| **LIM-02** | **Cold-Initialization Builder Overwrite:** Re-executing `build_mapping_registry.py` reconstructed the registry from baseline inputs, risking silent destruction of human review decisions. | **Medium** | **RESOLVED IN STAGE 3.2.2** | Hardened `build_mapping_registry.py` with: (1) Default safety halt refusing to overwrite existing files, (2) Safe `--merge-existing` policy preserving all human decisions, (3) Source conflict detection, and (4) Mandatory automated backup archive generation in `data/interim/backups/`. |
+| **LIM-03** | **Unauthenticated Prototype CLI:** Reviewer identity (`--reviewer-id`) and role (`--reviewer-role`) are self-asserted strings without cryptographic proof or OAuth token validation. | **Low** (Design Constraint) | **RETAINED AS PROTOTYPE BOUNDARY** | Prominently disclaimed via operational CLI banner; requires Parichay / MeriPehchaan institutional SSO integration prior to production deployment. |
 
 ---
 
@@ -217,5 +217,6 @@ MoSPI SIH26101: Competency Mapping Registry Validation (Stage 3.2)
 **Evidence Base:**
 1. **Zero Text / Data Corruption:** All 226 course records and 6 candidate mappings reconcile with 100% precision across all baseline and generated artifacts.
 2. **Strict Invariant Enforcement:** Zero Domain courses mapped to KCM, zero fabricated levels, zero uncalibrated float confidence scores, and zero unapproved validations.
-3. **Flawless Automated Checks:** 76 / 76 pytest fixtures pass; standalone validator exits with code 0.
+3. **Flawless Automated Checks:** 82 / 82 pytest fixtures pass; standalone validator exits with code 0.
+4. **Hardened Operational Safety (Stage 3.2.2):** Findings LIM-01 and LIM-02 are completely resolved with comprehensive regression test coverage. LIM-03 is documented as an intentional architectural prototype boundary.
 4. **Documented Operational Boundaries:** The three identified limitations (LIM-01, LIM-02, LIM-03) do not compromise data integrity and are clearly documented for Stage 3.3.

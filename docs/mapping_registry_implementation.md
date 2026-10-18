@@ -9,7 +9,7 @@
 > **Generated Artifacts:**  
 > - `data/processed/acbp_kcm_mappings.json` & [`.csv`](file:///d:/Projects/SIH26101/SIH26101-Skill-Intelligence/data/processed/acbp_kcm_mappings.csv)  
 > - `data/processed/acbp_kcm_review_queue.json` & [`.csv`](file:///d:/Projects/SIH26101/SIH26101-Skill-Intelligence/data/processed/acbp_kcm_review_queue.csv)  
-> **Pipeline Version:** `3.2.0`  
+> **Pipeline Version:** `3.2.2` (Hardened)  
 > **Author:** Antigravity AI & SIH26101 Engineering Team  
 
 ---
@@ -82,6 +82,8 @@ The review queue at [`data/processed/acbp_kcm_review_queue.json`](file:///d:/Pro
 
 ---
 
+---
+
 ## 5. Safe Review CLI Operation (`review_mapping.py`)
 
 A dedicated command-line workflow was created to support safe status transitions.
@@ -93,16 +95,18 @@ A dedicated command-line workflow was created to support safe status transitions
 - `pending_review` $\rightarrow$ `reject` (requires `--rationale`; record is **retained**, never deleted)
 - `pending_review` $\rightarrow$ `mark_unresolved` (returns to unresolved when evidence is inconclusive)
 
-### 5.2 Command Examples
+### 5.2 Unambiguous Mapping Identifier Requirement (LIM-01 Resolution)
+Per Stage 3.2.2 hardening, review operations strictly require an unambiguous primary key `mapping_id` (`MAP-ACBP-KCM-XXX`). Passing a course ID (`ACBP-CRS-XXX`) is explicitly rejected because courses may receive multiple candidate mappings in future pipeline stages.
+
 ```powershell
-# 1. Inspect / Dry-run validation of a candidate
-python scripts/review_mapping.py --id ACBP-CRS-040 --action validate --reviewer-id "faculty_sme" --reviewer-role "NSSTA Faculty" --rationale "Verified that module syllabus addresses Indic governance and strategic leadership indicators." --dry-run
+# 1. Inspect / Dry-run validation of a candidate using unambiguous mapping_id
+python scripts/review_mapping.py --mapping-id MAP-ACBP-KCM-040 --action validate --reviewer-id "faculty_sme" --reviewer-role "NSSTA Faculty" --rationale "Verified that module syllabus addresses Indic governance and strategic leadership indicators." --dry-run
 
 # 2. Reject an over-broad mapping (safe audit retention)
-python scripts/review_mapping.py --id ACBP-CRS-036 --action reject --reviewer-id "faculty_sme" --reviewer-role "NSSTA Faculty" --rationale "Course duration is 36m and covers basic leadership; does not satisfy KCM-FUNC-05 technical project planning and PERT/CPM indicators."
+python scripts/review_mapping.py --mapping-id MAP-ACBP-KCM-036 --action reject --reviewer-id "faculty_sme" --reviewer-role "NSSTA Faculty" --rationale "Course duration is 36m and covers basic leadership; does not satisfy KCM-FUNC-05 technical project planning and PERT/CPM indicators."
 
 # 3. Promote an unresolved course to curated candidate
-python scripts/review_mapping.py --id ACBP-CRS-008 --action promote_to_curated --kcm-id "KCM-FUNC-19" --rationale "Disciplinary inquiry rules directly map to Vigilance Administration sub-theme on Conduct Rules (p. 99)."
+python scripts/review_mapping.py --mapping-id MAP-ACBP-KCM-008 --action promote_to_curated --kcm-id "KCM-FUNC-19" --rationale "Disciplinary inquiry rules directly map to Vigilance Administration sub-theme on Conduct Rules (p. 99)."
 ```
 
 ### 5.3 Prototype Operational Disclaimer
@@ -118,12 +122,17 @@ Formal production validation requires authenticated MoSPI/NSSTA/CBC identity ass
 
 ---
 
-## 6. How to Reproduce & Validate
+## 6. How to Reproduce & Validate (Hardened Workflow)
 
-### 1. Regenerate Mapping Registry & Review Queue
+### 1. Build or Refresh Mapping Registry & Review Queue (LIM-02 Resolution)
 ```powershell
-python scripts/build_mapping_registry.py
+# Refreshes the registry while strictly preserving human review decisions, rejections, and rationales
+python scripts/build_mapping_registry.py --merge-existing
+
+# Or re-initialize from scratch with mandatory automated backup archiving
+python scripts/build_mapping_registry.py --init-clean --create-backup
 ```
+*Safety Note:* Executing `build_mapping_registry.py` without flags halts with code 1 by design if the registry already exists, preventing accidental overwrite of human review decisions.
 
 ### 2. Execute Deterministic Validation
 ```powershell
@@ -134,3 +143,4 @@ python scripts/validate_competency_mappings.py
 ```powershell
 python -m pytest -v
 ```
+*(All 82 automated test fixtures passing)*

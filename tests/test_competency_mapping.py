@@ -18,6 +18,7 @@ import csv
 import hashlib
 import json
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
@@ -359,9 +360,9 @@ def test_validator_catches_unapproved_validation_status(courses_data, kcm_data):
 
 
 def test_review_cli_dry_run_validate():
-    """Verify review_mapping.py dry-run validation succeeds on valid inputs."""
+    """Verify review_mapping.py dry-run validation succeeds on valid mapping_id."""
     success, msg = execute_review(
-        target_id="ACBP-CRS-017",
+        target_id="MAP-ACBP-KCM-017",
         action="validate",
         reviewer_id="nssta_reviewer_01",
         reviewer_role="NSSTA Faculty",
@@ -375,7 +376,7 @@ def test_review_cli_dry_run_validate():
 def test_review_cli_dry_run_reject():
     """Verify review_mapping.py dry-run rejection succeeds and preserves audit critique."""
     success, msg = execute_review(
-        target_id="ACBP-CRS-017",
+        target_id="MAP-ACBP-KCM-017",
         action="reject",
         reviewer_id="nssta_reviewer_01",
         reviewer_role="NSSTA Faculty",
@@ -389,7 +390,7 @@ def test_review_cli_dry_run_reject():
 def test_review_cli_rejects_illegal_transition():
     """Verify review_mapping.py refuses to validate an unresolved domain course."""
     success, msg = execute_review(
-        target_id="ACBP-CRS-001",
+        target_id="MAP-ACBP-KCM-001",
         action="validate",
         reviewer_id="nssta_reviewer_01",
         reviewer_role="NSSTA Faculty",
@@ -398,3 +399,157 @@ def test_review_cli_rejects_illegal_transition():
     )
     assert not success
     assert "Illegal transition" in msg
+
+
+def test_review_cli_rejects_course_id_as_ambiguous():
+    """Verify review_mapping.py strictly rejects course_record_id with clear explanatory error (LIM-01)."""
+    success, msg = execute_review(
+        target_id="ACBP-CRS-017",
+        action="validate",
+        reviewer_id="nssta_reviewer_01",
+        reviewer_role="NSSTA Faculty",
+        rationale="Attempting to use course_record_id instead of mapping_id.",
+        dry_run=True,
+    )
+    assert not success
+    assert "Ambiguous identifier" in msg
+    assert "course_record_id, not a mapping_id" in msg
+    assert "MAP-ACBP-KCM-017" in msg
+
+
+def test_review_cli_rejects_malformed_and_unknown_identifiers():
+    """Verify review_mapping.py rejects empty, malformed, and non-existent mapping IDs."""
+    # Empty
+    success, msg = execute_review(target_id="", action="validate", rationale="Test", dry_run=True)
+    assert not success
+    assert "cannot be empty" in msg
+
+    # Malformed format
+    success, msg = execute_review(target_id="INVALID_ID_FORMAT", action="validate", rationale="Test", dry_run=True)
+    assert not success
+    assert "Invalid identifier format" in msg
+
+    # Non-existent mapping ID
+    success, msg = execute_review(target_id="MAP-ACBP-KCM-999", action="validate", rationale="Test", dry_run=True)
+    assert not success
+    assert "No mapping record exists with mapping_id 'MAP-ACBP-KCM-999'" in msg
+
+
+def test_builder_refuses_overwrite_by_default(monkeypatch, capsys):
+    """Verify build_mapping_registry.py refuses to overwrite existing files by default (LIM-02)."""
+    import scripts.build_mapping_registry as bmr
+    monkeypatch.setattr(sys, "argv", ["scripts/build_mapping_registry.py"])
+    with pytest.raises(SystemExit) as excinfo:
+        bmr.main()
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "[SAFETY HALT] Target mapping registry already exists" in captured.err
+    assert "--merge-existing" in captured.err
+
+
+def test_builder_merge_preserves_human_decisions(tmp_path):
+    """Verify --merge-existing preserves human decisions (validated, rejected, curated) across rebuilds."""
+    import scripts.build_mapping_registry as bmr
+
+    # Load baseline
+    courses, kcm_by_id, cand_by_course = bmr.load_input_datasets()
+    source_hash_course = bmr.compute_sha256(bmr.ACBP_COURSES_PATH)
+    source_hash_kcm = bmr.compute_sha256(bmr.KCM_COMPETENCIES_PATH)
+
+    # Initial build in temp dir
+    initial_mappings, initial_queue = bmr.build_mapping_records(
+        courses, kcm_by_id, cand_by_course, source_hash_course, source_hash_kcm
+    )
+
+    # Simulate a human review: validate MAP-ACBP-KCM-040 and reject MAP-ACBP-KCM-036
+    for m in initial_mappings:
+        if m["mapping_id"] == "MAP-ACBP-KCM-040":
+            m["mapping_type"] = "validated"
+            m["validation_status"] = "validated"
+            m["reviewer_id"] = "sme_faculty_01"
+            m["reviewer_role"] = "NSSTA Faculty"
+            m["reviewed_at"] = "2026-10-18T15:00:00+00:00"
+            m["evidence_or_rationale"] = "Human verified: Indic leadership syllabus matches KCM-BEH-10 indicators."
+            m["reviewer_notes"] = "Approved after module outline audit."
+        elif m["mapping_id"] == "MAP-ACBP-KCM-036":
+            m["validation_status"] = "rejected"
+            m["reviewer_id"] = "sme_faculty_01"
+            m["reviewer_role"] = "NSSTA Faculty"
+            m["reviewed_at"] = "2026-10-18T15:05:00+00:00"
+            m["evidence_or_rationale"] = "REJECTED: 36m lecture does not satisfy technical project management criteria."
+
+    # Index simulated existing records
+    existing_by_id = {m["mapping_id"]: m for m in initial_mappings}
+
+    # Execute merge
+    merged_mappings, merged_queue = bmr.build_mapping_records(
+        courses, kcm_by_id, cand_by_course, source_hash_course, source_hash_kcm, existing_records=existing_by_id
+    )
+
+    # Verify that human decisions were preserved 100%
+    merged_by_id = {m["mapping_id"]: m for m in merged_mappings}
+
+    val_rec = merged_by_id["MAP-ACBP-KCM-040"]
+    assert val_rec["validation_status"] == "validated"
+    assert val_rec["reviewer_id"] == "sme_faculty_01"
+    assert val_rec["reviewer_role"] == "NSSTA Faculty"
+    assert val_rec["reviewed_at"] == "2026-10-18T15:00:00+00:00"
+    assert "Indic leadership syllabus matches" in val_rec["evidence_or_rationale"]
+    assert val_rec["reviewer_notes"] == "Approved after module outline audit."
+
+    rej_rec = merged_by_id["MAP-ACBP-KCM-036"]
+    assert rej_rec["validation_status"] == "rejected"
+    assert rej_rec["reviewer_id"] == "sme_faculty_01"
+    assert "does not satisfy technical project management criteria" in rej_rec["evidence_or_rationale"]
+
+
+def test_builder_merge_detects_source_conflict_safely(tmp_path):
+    """Verify --merge-existing detects source conflict and aborts safely without corrupting files."""
+    import scripts.build_mapping_registry as bmr
+
+    courses, kcm_by_id, cand_by_course = bmr.load_input_datasets()
+    source_hash_course = bmr.compute_sha256(bmr.ACBP_COURSES_PATH)
+    source_hash_kcm = bmr.compute_sha256(bmr.KCM_COMPETENCIES_PATH)
+
+    # Initial build
+    initial_mappings, _ = bmr.build_mapping_records(
+        courses, kcm_by_id, cand_by_course, source_hash_course, source_hash_kcm
+    )
+
+    # Simulate validated record with old course title
+    existing_by_id = {m["mapping_id"]: dict(m) for m in initial_mappings}
+    existing_by_id["MAP-ACBP-KCM-040"]["validation_status"] = "validated"
+    existing_by_id["MAP-ACBP-KCM-040"]["reviewer_id"] = "sme_faculty_01"
+    existing_by_id["MAP-ACBP-KCM-040"]["course_name"] = "Different Old Title Before Update"
+
+    # Running build should detect conflict and raise ValueError
+    with pytest.raises(ValueError) as excinfo:
+        bmr.build_mapping_records(
+            courses, kcm_by_id, cand_by_course, source_hash_course, source_hash_kcm, existing_records=existing_by_id
+        )
+    assert "Conflict detected for course 'ACBP-CRS-040'" in str(excinfo.value)
+    assert "Source course metadata in acbp_courses.json has changed" in str(excinfo.value)
+
+
+def test_failed_review_operation_leaves_registry_unchanged():
+    """Verify that a rejected or invalid review operation leaves persistent files byte-for-byte identical."""
+    hash_json_before = compute_sha256(MAPPINGS_JSON_PATH)
+    hash_csv_before = compute_sha256(MAPPINGS_CSV_PATH)
+
+    # Attempt illegal transition
+    success, _ = execute_review(
+        target_id="MAP-ACBP-KCM-001",
+        action="validate",
+        reviewer_id="illegal_reviewer",
+        reviewer_role="NSSTA Faculty",
+        rationale="Illegal validation of unresolved course",
+        dry_run=False,
+    )
+    assert not success
+
+    hash_json_after = compute_sha256(MAPPINGS_JSON_PATH)
+    hash_csv_after = compute_sha256(MAPPINGS_CSV_PATH)
+
+    assert hash_json_before == hash_json_after, "Registry JSON modified during failed operation!"
+    assert hash_csv_before == hash_csv_after, "Registry CSV modified during failed operation!"
+

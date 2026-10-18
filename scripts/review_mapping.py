@@ -20,6 +20,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -156,6 +157,10 @@ def sync_review_queue(mappings: List[Dict[str, Any]]) -> None:
                 writer.writerow(row_dict)
 
 
+MAPPING_ID_RE = re.compile(r"^MAP-ACBP-KCM-[0-9]{3,}$")
+COURSE_ID_RE = re.compile(r"^ACBP-CRS-[0-9]{3}$")
+
+
 def execute_review(
     target_id: str,
     action: str,
@@ -166,19 +171,37 @@ def execute_review(
     reviewer_notes: Optional[str] = None,
     dry_run: bool = False,
 ) -> Tuple[bool, str]:
-    """Execute a safe state transition on a mapping record."""
+    """Execute a safe state transition on a mapping record using an unambiguous mapping_id."""
+    if not target_id or not str(target_id).strip():
+        return False, "Identifier error: Mapping identifier cannot be empty."
+
+    target_id = target_id.strip()
+
+    # Reject course IDs with clear explanatory error (LIM-01)
+    if COURSE_ID_RE.match(target_id):
+        return False, (
+            f"Ambiguous identifier: '{target_id}' is a course_record_id, not a mapping_id. "
+            f"Review operations strictly require a unique mapping_id (e.g., 'MAP-ACBP-KCM-017') "
+            f"because courses may have multiple candidate mappings in future stages."
+        )
+
+    # Validate mapping ID format
+    if not MAPPING_ID_RE.match(target_id):
+        return False, (
+            f"Invalid identifier format: '{target_id}'. Mapping identifiers must match "
+            f"pattern '^MAP-ACBP-KCM-[0-9]{{3,}}$' (e.g., 'MAP-ACBP-KCM-017')."
+        )
+
     registry_data, mappings, kcm_by_id = load_registry()
 
-    # Find record by mapping_id or course_record_id
-    rec: Optional[Dict[str, Any]] = None
-    for m in mappings:
-        if m["mapping_id"] == target_id or m["course_record_id"] == target_id:
-            rec = m
-            break
+    # Strictly search by mapping_id
+    matches = [m for m in mappings if m.get("mapping_id") == target_id]
+    if len(matches) == 0:
+        return False, f"Record not found: No mapping record exists with mapping_id '{target_id}'."
+    if len(matches) > 1:
+        return False, f"Integrity error: Multiple mapping records ({len(matches)}) found with mapping_id '{target_id}'. Mapping IDs must be strictly unique."
 
-    if not rec:
-        return False, f"Record not found for identifier: '{target_id}'"
-
+    rec = matches[0]
     mid = rec["mapping_id"]
     cid = rec["course_record_id"]
     curr_status = rec["validation_status"]
@@ -291,7 +314,13 @@ def execute_review(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MoSPI SIH26101: Competency Mapping Safe Review CLI")
-    parser.add_argument("--id", required=True, help="Mapping ID (e.g. MAP-ACBP-KCM-001) or Course ID (e.g. ACBP-CRS-017)")
+    parser.add_argument(
+        "--mapping-id",
+        "--id",
+        dest="mapping_id",
+        required=True,
+        help="Unique mapping identifier (e.g. MAP-ACBP-KCM-017). Course IDs are strictly prohibited.",
+    )
     parser.add_argument(
         "--action",
         required=True,
@@ -310,7 +339,7 @@ def main() -> None:
     print_prototype_disclaimer()
 
     success, msg = execute_review(
-        target_id=args.id,
+        target_id=args.mapping_id,
         action=args.action,
         rationale=args.rationale,
         reviewer_id=args.reviewer_id,
